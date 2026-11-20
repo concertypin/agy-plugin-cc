@@ -282,7 +282,7 @@ test("[TS-1102] [BE-IT] run mode precedence is flag, then workspace setup, then 
   withCompanion(({ dryRunMode, setup }) => {
     const env = { AGY_PLUGIN_DEFAULT_MODE: "auto" };
     assert.equal(dryRunMode([]), "mode: dangerously-skip-permissions (no agy sandbox)");
-    assert.deepEqual(setup([]).modeSource, "default");
+    assert.equal(setup([]).modeSource, "default");
     assert.equal(dryRunMode([], env), "mode: auto");
     assert.equal(setup([], env).modeSource, "env");
 
