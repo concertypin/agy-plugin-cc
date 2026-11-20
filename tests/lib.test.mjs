@@ -191,11 +191,28 @@ test("[TS-1005] [BE-UT] Windows lookup falls back to the vendor install dir unde
   });
 });
 
-test("[TS-1006] [BE-UT] POSIX lookup takes extensionless agy and falls back to ~/.local/bin", () => {
+// A POSIX PATH is ":"-separated, which splits Windows temp paths at the drive letter.
+const POSIX_PATHS_ONLY = process.platform === "win32" && "a \":\"-separated PATH cannot hold Windows drive paths";
+
+test("[TS-1006] [BE-UT] POSIX lookup takes extensionless agy from PATH, ahead of every fallback", { skip: POSIX_PATHS_ONLY }, () => {
   withAgyDirs((root, touch) => {
-    touch(path.join(root, "path"), "agy.exe");
+    touch(path.join(root, "first"), "agy.exe");
+    const onPath = touch(path.join(root, "second"), "agy");
+    touch(path.join(root, ".local", "bin"), "agy");
+    const env = { PATH: [path.join(root, "first"), path.join(root, "second")].join(":") };
+    assert.equal(resolveAgyBinary({ platform: "linux", env, homedir: root }), onPath);
+  });
+});
+
+// The Homebrew prefixes are real system dirs probed before ~/.local/bin, so
+// this fallback can only be observed on a machine without agy installed there.
+const HOMEBREW_AGY_PRESENT = ["/opt/homebrew/bin/agy", "/usr/local/bin/agy"].some((file) => fs.existsSync(file))
+  && "agy is installed under a Homebrew prefix, which wins over ~/.local/bin";
+
+test("[TS-1010] [BE-UT] POSIX lookup falls back to ~/.local/bin", { skip: HOMEBREW_AGY_PRESENT }, () => {
+  withAgyDirs((root, touch) => {
     const local = touch(path.join(root, ".local", "bin"), "agy");
-    assert.equal(resolveAgyBinary({ platform: "linux", env: { PATH: path.join(root, "path") }, homedir: root }), local);
+    assert.equal(resolveAgyBinary({ platform: "linux", env: { PATH: "" }, homedir: root }), local);
   });
 });
 
