@@ -177,7 +177,7 @@ The first of these wins:
 3. The `AGY_PLUGIN_DEFAULT_MODE` environment variable, for example in the `env` block of `~/.claude/settings.json`
 4. `dangerously-skip-permissions`
 
-Delegated runs are headless, so an action agy would ask about is skipped instead: agy still exits successfully and prints a notice on stderr. A run can therefore finish without doing everything it was asked to do.
+Delegated runs are headless, so an action agy would ask about is skipped instead: agy still exits successfully and prints a notice on stderr. A run can therefore finish without doing everything it was asked to do; the plugin appends those notices to the result under "Notices from agy" (and returns them as `stderr` in `--json` output).
 
 `auto` needs agy's terminal sandbox (agy 1.3.5+ on macOS/Linux, 1.4.4+ on Windows 11 24H2 or later) and a personal account; where agy cannot offer it, agy falls back to its default mode. The stop-time review gate needs agy to answer `ALLOW:` or `BLOCK:`, so prefer a mode other than `plan` while the gate is on. `/agy:setup` shows the mode in effect and where it came from.
 

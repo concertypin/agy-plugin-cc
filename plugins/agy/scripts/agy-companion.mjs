@@ -438,7 +438,8 @@ async function executeReviewRun(request) {
 
   const rendered = renderReviewResult(result.stdout, {
     reviewLabel: reviewName,
-    targetLabel: target.label
+    targetLabel: target.label,
+    stderr: result.stderr
   });
   const payload = {
     review: reviewName,
@@ -508,7 +509,8 @@ async function executeTaskRun(request) {
   const payload = {
     status: result.exitCode === 0 ? "completed" : "failed",
     exitCode: result.exitCode,
-    rawOutput
+    rawOutput,
+    stderr: failureMessage
   };
 
   return {

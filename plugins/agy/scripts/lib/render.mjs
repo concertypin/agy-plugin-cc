@@ -104,11 +104,22 @@ export function renderSetupReport(report) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
+// Headless agy skips actions it would have asked about, exits 0 and says so
+// only on stderr. Without this the skip is invisible to whoever reads stdout.
+export function appendAgyNotices(text, stderr) {
+  const body = text.endsWith("\n") ? text : `${text}\n`;
+  const notices = typeof stderr === "string" ? stderr.trim() : "";
+  if (!notices) {
+    return body;
+  }
+  return `${body}\nNotices from agy:\n${notices}\n`;
+}
+
 export function renderTaskResult(parsedResult, meta) {
   const rawOutput =
     typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
   if (rawOutput) {
-    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    return appendAgyNotices(rawOutput, parsedResult?.failureMessage);
   }
 
   const message =
@@ -127,7 +138,7 @@ export function renderReviewResult(rawOutput, meta) {
     lines.push("agy review completed without output.");
   }
 
-  return `${lines.join("\n").trimEnd()}\n`;
+  return appendAgyNotices(lines.join("\n").trimEnd(), meta.stderr);
 }
 
 export function renderStatusReport(report) {
@@ -202,7 +213,10 @@ export function renderStoredJobResult(job, storedJob) {
     "";
 
   if (rawOutput) {
-    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    // Task results keep agy's stderr beside rawOutput; review results are
+    // served from `rendered`, which already carries the notices.
+    const stderr = rawOutput === storedJob?.result?.rawOutput ? storedJob.result.stderr : null;
+    return appendAgyNotices(rawOutput, stderr);
   }
 
   const lines = [

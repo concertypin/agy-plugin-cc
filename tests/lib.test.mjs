@@ -369,3 +369,74 @@ test("[TS-1106] [BE-IT] setup reports an invalid env mode instead of failing, an
     assert.equal(dryRunMode([], { AGY_PLUGIN_DEFAULT_MODE: " accept-edits " }), "mode: accept-edits");
   });
 });
+
+const render = await import("../plugins/agy/scripts/lib/render.mjs");
+
+test("[TS-1201] [BE-UT] task, review and stored results show agy's stderr notices beside its output", () => {
+  const notice = "Skipped run_command: requires approval in headless mode";
+  assert.equal(render.renderTaskResult({ rawOutput: "done", failureMessage: `${notice}\n` }, {}), `done\n\nNotices from agy:\n${notice}\n`);
+  assert.equal(render.renderTaskResult({ rawOutput: "done\n", failureMessage: "  " }, {}), "done\n");
+  assert.equal(render.renderTaskResult({ rawOutput: "", failureMessage: "boom" }, {}), "boom\n");
+
+  const review = render.renderReviewResult("No issues.", { reviewLabel: "Review", targetLabel: "working tree", stderr: notice });
+  assert.ok(review.endsWith(`No issues.\n\nNotices from agy:\n${notice}\n`), review);
+
+  const job = { id: "task-1", title: "agy Task", status: "completed" };
+  assert.equal(render.renderStoredJobResult(job, { result: { rawOutput: "done", stderr: notice } }), `done\n\nNotices from agy:\n${notice}\n`);
+  assert.equal(render.renderStoredJobResult(job, { result: { rawOutput: "done" } }), "done\n");
+  assert.equal(render.renderStoredJobResult(job, { result: { review: "Review" }, rendered: review }), review);
+});
+
+test("[TS-1202] [BE-IT] a skipped action reported on stderr reaches the task output, its JSON and the stored result", { skip: POSIX_STUB_ONLY }, () => {
+  const tmpBase = path.resolve(".tmp");
+  fs.mkdirSync(tmpBase, { recursive: true });
+  const root = fs.mkdtempSync(path.join(tmpBase, "agy-notice-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  const notice = "Skipped run_command: requires approval in headless mode";
+  fs.writeFileSync(path.join(bin, "agy"), `#!${process.execPath}\nprocess.stdout.write("done");\nprocess.stderr.write(${JSON.stringify(`${notice}\n`)});\n`, { mode: 0o755 });
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace);
+  const script = path.resolve("plugins/agy/scripts/agy-companion.mjs");
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CLAUDE_PLUGIN_DATA: path.join(root, "data") };
+  const run = (args) => {
+    const result = spawnSync(process.execPath, [script, ...args], { cwd: workspace, env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  try {
+    assert.equal(run(["task", "--mode", "auto", "hello"]), `done\n\nNotices from agy:\n${notice}\n`);
+    const payload = JSON.parse(run(["task", "--json", "--mode", "auto", "hello"]));
+    assert.equal(payload.rawOutput, "done");
+    assert.equal(payload.stderr.trim(), notice);
+    const { jobId } = JSON.parse(run(["task", "--background", "--json", "hello"]));
+    run(["status", jobId, "--wait", "--timeout-ms", "20000", "--json"]);
+    assert.equal(run(["result", jobId]), `done\n\nNotices from agy:\n${notice}\n`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("[TS-1203] [BE-IT] a review run appends agy's stderr notices to the rendered review", { skip: POSIX_STUB_ONLY }, () => {
+  const tmpBase = path.resolve(".tmp");
+  fs.mkdirSync(tmpBase, { recursive: true });
+  const root = fs.mkdtempSync(path.join(tmpBase, "agy-review-notice-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  const notice = "Skipped run_command: requires approval in headless mode";
+  fs.writeFileSync(path.join(bin, "agy"), `#!${process.execPath}\nprocess.stdout.write("No issues.");\nprocess.stderr.write(${JSON.stringify(`${notice}\n`)});\n`, { mode: 0o755 });
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace);
+  const git = (...args) => assert.equal(spawnSync("git", args, { cwd: workspace, encoding: "utf8" }).status, 0, args.join(" "));
+  git("init", "-q");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init");
+  fs.writeFileSync(path.join(workspace, "changed.txt"), "change\n");
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CLAUDE_PLUGIN_DATA: path.join(root, "data") };
+  try {
+    const result = spawnSync(process.execPath, [path.resolve("plugins/agy/scripts/agy-companion.mjs"), "review", "--wait"], { cwd: workspace, env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.endsWith(`No issues.\n\nNotices from agy:\n${notice}\n`), result.stdout);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
