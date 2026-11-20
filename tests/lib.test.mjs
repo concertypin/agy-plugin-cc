@@ -440,3 +440,25 @@ test("[TS-1203] [BE-IT] a review run appends agy's stderr notices to the rendere
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Without windowsHide, every child process flashes a console window on Windows.
+test("[TS-1301] [BE-UT] every child process the plugin spawns hides its Windows console", () => {
+  const scriptsDir = path.resolve("plugins/agy/scripts");
+  const files = fs.readdirSync(scriptsDir, { recursive: true }).filter((file) => file.endsWith(".mjs"));
+  let checked = 0;
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(scriptsDir, file), "utf8");
+    for (const match of source.matchAll(/\bspawn(?:Sync)?\(/g)) {
+      let depth = 0;
+      let end = match.index + match[0].length - 1;
+      for (; end < source.length; end += 1) {
+        if (source[end] === "(") depth += 1;
+        else if (source[end] === ")" && --depth === 0) break;
+      }
+      const call = source.slice(match.index, end + 1);
+      assert.match(call, /windowsHide: true/, `${file}: ${call.split("\n")[0]}`);
+      checked += 1;
+    }
+  }
+  assert.ok(checked >= 10, `expected to find the plugin's spawn calls, found ${checked}`);
+});

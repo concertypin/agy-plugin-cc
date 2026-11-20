@@ -12,7 +12,8 @@ export function runCodexBarAntigravityQuota(cwd, options = {}) {
     cwd: cwd || process.cwd(),
     env: options.env ?? process.env,
     encoding: "utf8",
-    timeout: options.timeout
+    timeout: options.timeout,
+    windowsHide: true
   });
 
   return {

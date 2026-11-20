@@ -135,7 +135,8 @@ function runStopReview(cwd, input = {}) {
       cwd,
       env: childEnv,
       encoding: "utf8",
-      timeout: STOP_REVIEW_TIMEOUT_MS
+      timeout: STOP_REVIEW_TIMEOUT_MS,
+      windowsHide: true
     }
   );
 

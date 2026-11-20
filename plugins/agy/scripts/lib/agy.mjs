@@ -142,7 +142,8 @@ export async function runAgyTask(cwd, prompt, options = {}) {
       const child = spawn(agyCommand(), args, {
         cwd: cwd || process.cwd(),
         env: options.env ?? process.env,
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
       });
 
     let stdout = "";
@@ -175,7 +176,8 @@ export function runAgyTaskSync(cwd, prompt, options = {}) {
     cwd: cwd || process.cwd(),
     env: options.env ?? process.env,
     encoding: "utf8",
-    timeout: options.timeout
+    timeout: options.timeout,
+    windowsHide: true
   });
 
   if (result.error?.code === "ETIMEDOUT") {
@@ -200,7 +202,8 @@ export function runAgyModels(cwd, options = {}) {
     cwd: cwd || process.cwd(),
     env: options.env ?? process.env,
     encoding: "utf8",
-    timeout: options.timeout
+    timeout: options.timeout,
+    windowsHide: true
   });
 
   return {
@@ -216,7 +219,8 @@ export function runAgyAgents(cwd, options = {}) {
     cwd: cwd || process.cwd(),
     env: options.env ?? process.env,
     encoding: "utf8",
-    timeout: options.timeout
+    timeout: options.timeout,
+    windowsHide: true
   });
 
   return {
@@ -232,7 +236,8 @@ export function runAgyChangelog(cwd, options = {}) {
     cwd: cwd || process.cwd(),
     env: options.env ?? process.env,
     encoding: "utf8",
-    timeout: options.timeout
+    timeout: options.timeout,
+    windowsHide: true
   });
 
   return {
