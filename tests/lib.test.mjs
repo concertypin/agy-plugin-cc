@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
-import { buildAgyArgs, runAgyTask, runAgyTaskSync } from "../plugins/agy/scripts/lib/agy.mjs";
+import { buildAgyArgs, installHint, resolveAgyBinary, runAgyTask, runAgyTaskSync } from "../plugins/agy/scripts/lib/agy.mjs";
+import { runCommand } from "../plugins/agy/scripts/lib/process.mjs";
 
 import { parseArgs, splitRawArgumentString } from "../plugins/agy/scripts/lib/args.mjs";
 
@@ -131,7 +132,11 @@ test("[TS-1002] [BE-IT] CLI rejects deprecated sandbox before launching a task o
 });
 
 
-test("[TS-1003] [BE-IT] asynchronous task and synchronous stop-review launch pass permission arguments to agy", async () => {
+// Windows only spawns agy.exe without a shell, and a script stub cannot be one.
+// resolveAgyBinary's Windows lookup is covered by the platform-injected tests below.
+const POSIX_STUB_ONLY = process.platform === "win32" && "agy stub is a POSIX script; Windows can only spawn agy.exe";
+
+test("[TS-1003] [BE-IT] asynchronous task and synchronous stop-review launch pass permission arguments to agy", { skip: POSIX_STUB_ONLY }, async () => {
   const tmpBase = path.resolve(".tmp");
   fs.mkdirSync(tmpBase, { recursive: true });
   const root = fs.mkdtempSync(path.join(tmpBase, "agy-stub-"));
@@ -150,4 +155,69 @@ test("[TS-1003] [BE-IT] asynchronous task and synchronous stop-review launch pas
     process.env.PATH = previousPath;
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+function withAgyDirs(fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-resolve-"));
+  const touch = (dir, name) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, "", { mode: 0o755 });
+    return file;
+  };
+  try {
+    return fn(root, touch);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("[TS-1004] [BE-UT] Windows lookup takes agy.exe from PATH and skips shims it cannot spawn", () => {
+  withAgyDirs((root, touch) => {
+    const shims = path.join(root, "shims");
+    touch(shims, "agy");
+    touch(shims, "agy.cmd");
+    const exe = touch(path.join(root, "bin"), "agy.exe");
+    const env = { PATH: [shims, path.join(root, "bin")].join(";") };
+    assert.equal(resolveAgyBinary({ platform: "win32", env, homedir: root }), exe);
+  });
+});
+
+test("[TS-1005] [BE-UT] Windows lookup falls back to the vendor install dir under LOCALAPPDATA", () => {
+  withAgyDirs((root, touch) => {
+    const exe = touch(path.join(root, "agy", "bin"), "agy.exe");
+    assert.equal(resolveAgyBinary({ platform: "win32", env: { PATH: "", LOCALAPPDATA: root }, homedir: root }), exe);
+    assert.equal(resolveAgyBinary({ platform: "win32", env: { PATH: "" }, homedir: root }), null);
+  });
+});
+
+test("[TS-1006] [BE-UT] POSIX lookup takes extensionless agy and falls back to ~/.local/bin", () => {
+  withAgyDirs((root, touch) => {
+    touch(path.join(root, "path"), "agy.exe");
+    const local = touch(path.join(root, ".local", "bin"), "agy");
+    assert.equal(resolveAgyBinary({ platform: "linux", env: { PATH: path.join(root, "path") }, homedir: root }), local);
+  });
+});
+
+test("[TS-1007] [BE-IT] runCommand passes arguments verbatim without a shell", () => {
+  const injected = "a & echo injected | b";
+  const result = runCommand(process.execPath, ["-e", "process.stdout.write(process.argv[1])", injected]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, injected);
+});
+
+test("[TS-1008] [BE-UT] install hint matches the platform's vendor installer", () => {
+  assert.match(installHint("win32"), /install\.ps1/);
+  assert.match(installHint("darwin"), /install\.sh \| bash/);
+  assert.match(installHint("linux"), /install\.sh \| bash/);
+});
+
+test("[TS-1009] [BE-UT] Windows lookup reads Path/LocalAppData case-insensitively and unquotes PATH entries", () => {
+  withAgyDirs((root, touch) => {
+    const quotedDir = path.join(root, "Program Files", "agy");
+    const exe = touch(quotedDir, "agy.exe");
+    assert.equal(resolveAgyBinary({ platform: "win32", env: { Path: `"${quotedDir}"` }, homedir: root }), exe);
+    const vendor = touch(path.join(root, "agy", "bin"), "agy.exe");
+    assert.equal(resolveAgyBinary({ platform: "win32", env: { Path: "", LocalAppData: root }, homedir: root }), vendor);
+  });
 });

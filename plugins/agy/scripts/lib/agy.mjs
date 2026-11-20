@@ -12,17 +12,30 @@ const HOMEBREW_PREFIXES = ["/opt/homebrew/bin", "/usr/local/bin"];
 // Hook and IDE processes often run with a trimmed PATH; treating that as
 // "not installed" sent assistants to the vendor installer on machines where
 // the CLI was already present.
-export function resolveAgyBinary() {
-  const dirs = [
-    ...(process.env.PATH || "").split(path.delimiter),
-    ...HOMEBREW_PREFIXES,
-    path.join(os.homedir(), ".local", "bin")
-  ];
+//
+// On Windows the vendor installer ships agy.exe under %LOCALAPPDATA%\agy\bin.
+// Only agy.exe is accepted there: Node cannot spawn .cmd/.bat shims without a
+// shell, and an extensionless "agy" file is not runnable at all.
+export function resolveAgyBinary({ platform = process.platform, env = process.env, homedir = os.homedir() } = {}) {
+  const isWindows = platform === "win32";
+  // Windows env keys are case-insensitive ("Path"), but a copied env object is not.
+  const readEnv = (key) => isWindows
+    ? env[Object.keys(env).find((name) => name.toUpperCase() === key)]
+    : env[key];
+  const localAppData = readEnv("LOCALAPPDATA");
+  const fallbackDirs = isWindows
+    ? (localAppData ? [path.join(localAppData, "agy", "bin")] : [])
+    : [...HOMEBREW_PREFIXES, path.join(homedir, ".local", "bin")];
+  const pathDirs = (readEnv("PATH") || "").split(isWindows ? ";" : ":")
+    // Windows allows quoted PATH entries such as "C:\Program Files\agy\bin".
+    .map((dir) => (isWindows ? dir.replace(/^"(.*)"$/, "$1") : dir));
+  const dirs = [...pathDirs, ...fallbackDirs];
+  const name = isWindows ? "agy.exe" : "agy";
   for (const dir of dirs) {
     if (!dir) continue;
-    const candidate = path.join(dir, "agy");
+    const candidate = path.join(dir, name);
     try {
-      fs.accessSync(candidate, fs.constants.X_OK);
+      fs.accessSync(candidate, isWindows ? fs.constants.F_OK : fs.constants.X_OK);
       if (fs.statSync(candidate).isFile()) return candidate;
     } catch {
       // not here
@@ -35,7 +48,10 @@ export function resolveAgyBinary() {
 // vendor installer puts it in ~/.local/bin, where that updater owns it. A
 // Homebrew cask fights the updater: each self-update replaces the cask's
 // symlink with a plain binary and the next `brew upgrade` fails to link.
-export function installHint() {
+export function installHint(platform = process.platform) {
+  if (platform === "win32") {
+    return "irm https://antigravity.google/cli/install.ps1 | iex   (in PowerShell)";
+  }
   return "curl -fsSL https://antigravity.google/cli/install.sh | bash";
 }
 

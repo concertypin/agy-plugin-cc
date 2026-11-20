@@ -9,7 +9,10 @@ export function runCommand(command, args = [], options = {}) {
     input: options.input,
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
-    shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
+    // Every command run here (git, taskkill, agy.exe) is a real executable, so
+    // no shell is needed on Windows either. A shell would concatenate args
+    // unescaped (Node DEP0190), letting a branch name or prompt inject commands.
+    shell: false,
     windowsHide: true
   });
 
