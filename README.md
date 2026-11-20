@@ -50,12 +50,14 @@ Manual update: `/plugin marketplace update agy-plugin-cc`, then `/reload-plugins
 
 ### `/agy:setup`
 
-Check whether `agy` is installed and optionally toggle the stop-time review gate.
+Check whether `agy` is installed, optionally toggle the stop-time review gate, and set the run mode for this workspace.
 
 ```text
 /agy:setup
 /agy:setup --enable-review-gate
 /agy:setup --disable-review-gate
+/agy:setup --mode auto
+/agy:setup --clear-mode
 ```
 
 ---
@@ -157,6 +159,30 @@ Cancel an active background job.
 
 ---
 
+## Run Mode
+
+Every delegated run (`/agy:agy`, `/agy:rescue`, reviews, and the stop-time review gate) starts agy in one run mode:
+
+| Mode | What agy may do |
+|------|-----------------|
+| `dangerously-skip-permissions` | Approve every tool call without asking (default) |
+| `auto` | agy's auto mode: workspace edits and safe, reversible commands run; risky or irreversible actions are skipped |
+| `accept-edits` | Approve workspace file edits; commands that need approval are skipped |
+| `plan` | Read-only investigation: agy plans and does not edit files |
+
+The first of these wins:
+
+1. `--mode <mode>` on the command (`--dangerously-skip-permissions` is an alias for `--mode dangerously-skip-permissions`)
+2. `/agy:setup --mode <mode>` for the current workspace (`--clear-mode` removes it)
+3. The `AGY_PLUGIN_DEFAULT_MODE` environment variable, for example in the `env` block of `~/.claude/settings.json`
+4. `dangerously-skip-permissions`
+
+Delegated runs are headless, so an action agy would ask about is skipped instead: agy still exits successfully and prints a notice on stderr. A run can therefore finish without doing everything it was asked to do.
+
+`auto` needs agy's terminal sandbox (agy 1.3.5+ on macOS/Linux, 1.4.4+ on Windows 11 24H2 or later) and a personal account; where agy cannot offer it, agy falls back to its default mode. The stop-time review gate needs agy to answer `ALLOW:` or `BLOCK:`, so prefer a mode other than `plan` while the gate is on. `/agy:setup` shows the mode in effect and where it came from.
+
+---
+
 ## Stop-Time Review Gate
 
 When enabled, `agy` runs a review before each session ends and blocks if it finds issues.
@@ -234,4 +260,4 @@ Apache-2.0), credited in `NOTICE`. Releases up to
 v1.5.1 were published under MIT and remain available under those terms (`LICENSE-MIT`). Keep
 `LICENSE` and `NOTICE` when you redistribute, and mark the files you change.
 
-Delegated agy runs use `--dangerously-skip-permissions` without agy terminal sandboxing. Parent environment restrictions still apply. For read-only reviews, state that constraint in the prompt. The `--sandbox` option is rejected.
+By default, delegated agy runs use `--dangerously-skip-permissions` without agy terminal sandboxing; see [Run Mode](#run-mode) to choose `auto`, `accept-edits`, or `plan` instead. Parent environment restrictions still apply. For read-only reviews, state that constraint in the prompt. The `--sandbox` option is rejected.

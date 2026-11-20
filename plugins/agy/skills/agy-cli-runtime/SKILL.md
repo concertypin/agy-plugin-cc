@@ -41,8 +41,8 @@ The companion also supports local agy CLI features verified against `agy 1.0.16`
 - `agents [--json]` lists available agy agents (raw `agy agents` passthrough).
 - `doctor [--json]` verifies plugin manifest, host wiring, agy binary/auth, and model listing.
 - `changelog [--json]` prints agy release notes (no agy task run, just `agy changelog`).
-- `task` accepts `--model <name>`, `--effort <low|medium|high>`, `--conversation <id>`, `--project <id>` or `--new-project` (mutually exclusive), `--dangerously-skip-permissions`, repeatable `--add-dir <path>`, `--log-file <path>`, and `--print-timeout <duration>`.
-- `review` and `adversarial-review` accept the same `--model`, `--effort`, `--project`/`--new-project`, `--dangerously-skip-permissions`, `--add-dir`, `--log-file`, and `--print-timeout` flags.
+- `task` accepts `--model <name>`, `--effort <low|medium|high>`, `--conversation <id>`, `--project <id>` or `--new-project` (mutually exclusive), `--mode <auto|accept-edits|plan|dangerously-skip-permissions>`, repeatable `--add-dir <path>`, `--log-file <path>`, and `--print-timeout <duration>`.
+- `review` and `adversarial-review` accept the same `--model`, `--effort`, `--project`/`--new-project`, `--mode`, `--add-dir`, `--log-file`, and `--print-timeout` flags.
 - `--model` is validated against a live `agy models` call before the run starts — an unrecognized name fails fast with the current model list instead of reaching agy.
 - `--effort` is validated against the static `low|medium|high` enum agy itself defines — no CLI call needed for this one.
 - `task`/`review`/`adversarial-review` accept `--dry-run`: prints the resolved options, the live `agy models` list (selected model marked), and current Antigravity quota (5-hour + weekly, Gemini and Claude/GPT pools) — then exits without calling agy. Use it to pick a model and confirm there's enough quota before committing to a real run.
@@ -50,6 +50,6 @@ The companion also supports local agy CLI features verified against `agy 1.0.16`
 
 Treat these as routing flags. Strip them from natural-language prompt text before invoking the helper.
 
-`--dangerously-skip-permissions` disables all agy tool-permission prompts for that run — only forward it when the user explicitly asked for it, never by default.
+`--mode` picks how agy may act for that run: `auto`, `accept-edits`, and `plan` are agy's own execution modes; `dangerously-skip-permissions` approves every tool call. Only forward `--mode` when the user explicitly asked for one. Without it the run uses `/agy:setup --mode` for the workspace, then the `AGY_PLUGIN_DEFAULT_MODE` environment variable, then `dangerously-skip-permissions`. `--dangerously-skip-permissions` is still accepted as an alias for `--mode dangerously-skip-permissions`.
 
 `/goal <...>` is not a CLI flag — it is a prompt-level directive agy's own agent parses out of the `--print` text. Passing a prompt that starts with `/goal` through `task` already works with no companion changes; it runs agy in autonomous goal mode (uncapped duration since agy 1.0.14) rather than a single turn.

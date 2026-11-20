@@ -75,9 +75,19 @@ export function getAgyAuthStatus(cwd) {
   return { loggedIn: true, detail: "agy is available (auth managed by agy itself)" };
 }
 
+// How delegated agy runs are permitted to act. The first three are agy's own
+// `--mode` values; dangerously-skip-permissions approves every tool call and
+// stays the default so existing installs behave exactly as before.
+export const AGY_RUN_MODES = ["auto", "accept-edits", "plan", "dangerously-skip-permissions"];
+export const DEFAULT_AGY_RUN_MODE = "dangerously-skip-permissions";
+
 export function buildAgyArgs(prompt, options = {}) {
   if (options.sandbox) throw new Error("--sandbox is no longer supported for delegation; remove --sandbox and specify read-only behavior in the prompt if needed.");
-  const args = ["--dangerously-skip-permissions"];
+  const mode = options.mode ?? DEFAULT_AGY_RUN_MODE;
+  if (!AGY_RUN_MODES.includes(mode)) {
+    throw new Error(`Unknown agy run mode "${mode}". Valid values: ${AGY_RUN_MODES.join(", ")}`);
+  }
+  const args = mode === "dangerously-skip-permissions" ? ["--dangerously-skip-permissions"] : ["--mode", mode];
 
   if (options.resumeLast) {
     args.push("--continue");

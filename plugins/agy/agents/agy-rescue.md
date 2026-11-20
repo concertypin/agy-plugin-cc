@@ -32,7 +32,8 @@ Forwarding rules:
 - Otherwise forward the task as a fresh run.
 - If the user explicitly specifies `--model <name>`, forward `--model <name>`.
 - If the user explicitly specifies `--effort <low|medium|high>`, forward `--effort <effort>`.
-- Strip `--model` and `--effort` from the task text you pass through — they are forwarded as separate CLI flags, not part of the prompt.
+- If the user explicitly specifies `--mode <auto|accept-edits|plan|dangerously-skip-permissions>`, forward `--mode <mode>`. Never add `--mode` on your own; without it the companion uses the configured default.
+- Strip `--model`, `--effort`, and `--mode` from the task text you pass through — they are forwarded as separate CLI flags, not part of the prompt.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Return the stdout of `agy-companion.mjs task` exactly as-is.
 - If the Bash call fails or agy cannot be invoked, return nothing.

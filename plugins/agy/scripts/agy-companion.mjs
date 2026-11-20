@@ -8,7 +8,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
-import { getAgyAuthStatus, getAgyAvailability, installHint, runAgyAgents, runAgyChangelog, runAgyModels, runAgyTask, runAgyTaskSync } from "./lib/agy.mjs";
+import { AGY_RUN_MODES, DEFAULT_AGY_RUN_MODE, getAgyAuthStatus, getAgyAvailability, installHint, runAgyAgents, runAgyChangelog, runAgyModels, runAgyTask, runAgyTaskSync } from "./lib/agy.mjs";
 import { getCodexBarAvailability, runCodexBarAntigravityQuota } from "./lib/codexbar.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
@@ -55,6 +55,7 @@ import {
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
+const AGY_RUN_MODE_ENV = "AGY_PLUGIN_DEFAULT_MODE";
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous agy turn.";
 const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -62,14 +63,14 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/agy-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
+      "  node scripts/agy-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--mode <auto|accept-edits|plan|dangerously-skip-permissions>|--clear-mode] [--json]",
       "  node scripts/agy-companion.mjs models [--json]",
       "  node scripts/agy-companion.mjs agents [--json]",
       "  node scripts/agy-companion.mjs doctor [--json]",
       "  node scripts/agy-companion.mjs changelog [--json]",
-      "  node scripts/agy-companion.mjs review [--wait|--background] [--dry-run] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <name>] [--effort <low|medium|high>] [--project <id>|--new-project] [--dangerously-skip-permissions] [--add-dir <path>] [--log-file <path>] [--print-timeout <duration>]",
-      "  node scripts/agy-companion.mjs adversarial-review [--wait|--background] [--dry-run] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <name>] [--effort <low|medium|high>] [--project <id>|--new-project] [--dangerously-skip-permissions] [--add-dir <path>] [--log-file <path>] [--print-timeout <duration>] [focus text]",
-      "  node scripts/agy-companion.mjs task [--background] [--dry-run] [--continue|--resume-last|--resume|--fresh] [--conversation <id>] [--model <name>] [--effort <low|medium|high>] [--project <id>|--new-project] [--dangerously-skip-permissions] [--add-dir <path>] [--log-file <path>] [--print-timeout <duration>] [prompt]",
+      "  node scripts/agy-companion.mjs review [--wait|--background] [--dry-run] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <name>] [--effort <low|medium|high>] [--project <id>|--new-project] [--mode <auto|accept-edits|plan|dangerously-skip-permissions>] [--add-dir <path>] [--log-file <path>] [--print-timeout <duration>]",
+      "  node scripts/agy-companion.mjs adversarial-review [--wait|--background] [--dry-run] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <name>] [--effort <low|medium|high>] [--project <id>|--new-project] [--mode <auto|accept-edits|plan|dangerously-skip-permissions>] [--add-dir <path>] [--log-file <path>] [--print-timeout <duration>] [focus text]",
+      "  node scripts/agy-companion.mjs task [--background] [--dry-run] [--continue|--resume-last|--resume|--fresh] [--conversation <id>] [--model <name>] [--effort <low|medium|high>] [--project <id>|--new-project] [--mode <auto|accept-edits|plan|dangerously-skip-permissions>] [--add-dir <path>] [--log-file <path>] [--print-timeout <duration>] [prompt]",
       "  node scripts/agy-companion.mjs task-worker --job-id <id>",
       "  node scripts/agy-companion.mjs task-resume-candidate [--json]",
       "  node scripts/agy-companion.mjs status [job-id] [--wait] [--all] [--json]",
@@ -170,11 +171,47 @@ function buildAgyRunOptions(cwd, options = {}, config = {}) {
     effort: options.effort ?? null,
     project: options.project ?? null,
     newProject: Boolean(options["new-project"]),
-    dangerouslySkipPermissions: true,
+    ...resolveAgyRunMode(cwd, options),
     addDirs,
     logFile: resolveOptionalPath(cwd, options["log-file"]),
     printTimeout: options["print-timeout"] ?? null
   };
+}
+
+function ensureValidRunMode(mode, origin) {
+  if (AGY_RUN_MODES.includes(mode)) {
+    return mode;
+  }
+  throw new Error(`Unknown ${origin} "${mode}". Valid values: ${AGY_RUN_MODES.join(", ")}`);
+}
+
+// Precedence: --mode (or its --dangerously-skip-permissions alias), then the
+// workspace's /agy:setup --mode, then AGY_PLUGIN_DEFAULT_MODE, then the default.
+function resolveAgyRunMode(cwd, options = {}) {
+  const aliasMode = options["dangerously-skip-permissions"] ? "dangerously-skip-permissions" : null;
+  if (options.mode && aliasMode && options.mode !== aliasMode) {
+    throw new Error("Choose either --mode or --dangerously-skip-permissions.");
+  }
+  if (options.mode === "") {
+    throw new Error(`Missing value for --mode. Valid values: ${AGY_RUN_MODES.join(", ")}`);
+  }
+  const flagMode = options.mode ?? aliasMode;
+  if (flagMode) {
+    return { mode: ensureValidRunMode(flagMode, "--mode"), modeSource: "flag" };
+  }
+  const configMode = getConfig(resolveWorkspaceRoot(cwd)).mode;
+  if (configMode) {
+    return { mode: ensureValidRunMode(configMode, "workspace mode"), modeSource: "workspace" };
+  }
+  const envMode = process.env[AGY_RUN_MODE_ENV]?.trim();
+  if (envMode) {
+    return { mode: ensureValidRunMode(envMode, AGY_RUN_MODE_ENV), modeSource: "env" };
+  }
+  return { mode: DEFAULT_AGY_RUN_MODE, modeSource: "default" };
+}
+
+function describeRunMode(mode) {
+  return mode === "dangerously-skip-permissions" ? "mode: dangerously-skip-permissions (no agy sandbox)" : `mode: ${mode}`;
 }
 
 function describeAgyRunOptions(agyOptions = {}) {
@@ -184,7 +221,7 @@ function describeAgyRunOptions(agyOptions = {}) {
   if (agyOptions.conversation) parts.push(`conversation: ${agyOptions.conversation}`);
   if (agyOptions.newProject) parts.push("new project");
   else if (agyOptions.project) parts.push(`project: ${agyOptions.project}`);
-  if (agyOptions.dangerouslySkipPermissions) parts.push("--dangerously-skip-permissions (no agy sandbox)");
+  parts.push(describeRunMode(agyOptions.mode ?? DEFAULT_AGY_RUN_MODE));
   if (agyOptions.addDirs?.length) parts.push(`add dirs: ${agyOptions.addDirs.length}`);
   if (agyOptions.printTimeout) parts.push(`timeout: ${agyOptions.printTimeout}`);
   if (agyOptions.logFile) parts.push(`log: ${agyOptions.logFile}`);
@@ -269,11 +306,25 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     );
   }
 
+  // Setup is where a bad mode gets diagnosed and fixed, so it reports the
+  // error instead of failing like delegated runs do.
+  let runMode;
+  try {
+    runMode = { ...resolveAgyRunMode(cwd), modeError: null };
+  } catch (error) {
+    runMode = { mode: null, modeSource: null, modeError: error.message };
+    nextSteps.push("Fix the run mode: run `/agy:setup --mode <auto|accept-edits|plan|dangerously-skip-permissions>` or correct AGY_PLUGIN_DEFAULT_MODE.");
+  }
+  const { mode, modeSource, modeError } = runMode;
+
   return {
     ready: agyStatus.available,
     agy: agyStatus,
     auth: authStatus,
     reviewGateEnabled: Boolean(config.stopReviewGate),
+    mode,
+    modeSource,
+    modeError,
     actionsTaken,
     nextSteps
   };
@@ -281,16 +332,26 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
+    valueOptions: ["cwd", "mode"],
     booleanOptions: [
       "json",
       "enable-review-gate",
-      "disable-review-gate"
+      "disable-review-gate",
+      "clear-mode"
     ]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
+  }
+  if (options.mode === "") {
+    throw new Error(`Missing value for --mode. Valid values: ${AGY_RUN_MODES.join(", ")}`);
+  }
+  if (options.mode && options["clear-mode"]) {
+    throw new Error("Choose either --mode or --clear-mode.");
+  }
+  if (options.mode) {
+    ensureValidRunMode(options.mode, "--mode");
   }
 
   const cwd = resolveCommandCwd(options);
@@ -303,6 +364,14 @@ async function handleSetup(argv) {
   } else if (options["disable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", false);
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
+  }
+
+  if (options.mode) {
+    setConfig(workspaceRoot, "mode", options.mode);
+    actionsTaken.push(`Set the agy run mode to ${options.mode} for ${workspaceRoot}.`);
+  } else if (options["clear-mode"]) {
+    setConfig(workspaceRoot, "mode", null);
+    actionsTaken.push(`Cleared the agy run mode for ${workspaceRoot}.`);
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken);
@@ -830,7 +899,7 @@ function handleAgents(argv) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "cwd", "model", "effort", "project", "add-dir", "log-file", "print-timeout"],
+    valueOptions: ["base", "scope", "cwd", "model", "effort", "mode", "project", "add-dir", "log-file", "print-timeout"],
     repeatableOptions: ["add-dir"],
     booleanOptions: ["json", "background", "wait", "new-project", "dangerously-skip-permissions", "dry-run"]
   });
@@ -901,7 +970,7 @@ async function handleReviewCommand(argv, config) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "prompt-file", "conversation", "model", "effort", "project", "add-dir", "log-file", "print-timeout"],
+    valueOptions: ["cwd", "prompt-file", "conversation", "model", "effort", "mode", "project", "add-dir", "log-file", "print-timeout"],
     repeatableOptions: ["add-dir"],
     booleanOptions: [
       "json",

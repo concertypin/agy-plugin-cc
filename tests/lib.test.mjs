@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
-import { buildAgyArgs, installHint, resolveAgyBinary, runAgyTask, runAgyTaskSync } from "../plugins/agy/scripts/lib/agy.mjs";
+import { AGY_RUN_MODES, buildAgyArgs, installHint, resolveAgyBinary, runAgyTask, runAgyTaskSync } from "../plugins/agy/scripts/lib/agy.mjs";
 import { runCommand } from "../plugins/agy/scripts/lib/process.mjs";
 
 import { parseArgs, splitRawArgumentString } from "../plugins/agy/scripts/lib/args.mjs";
@@ -113,13 +113,24 @@ test("generateJobId: carries the prefix and is unique", () => {
 });
 
 
-test("[TS-1001] [BE-UT] delegation arguments grant permissions without terminal sandbox for task and resume", () => {
-  for (const options of [{}, { resumeLast: true }, { conversation: "existing" }, { dangerouslySkipPermissions: true }]) {
+test("[TS-1001] [BE-UT] delegation arguments default to skipping permissions without terminal sandbox", () => {
+  for (const options of [{}, { resumeLast: true }, { conversation: "existing" }, { mode: "dangerously-skip-permissions" }]) {
     const args = buildAgyArgs("review without modifying files", options);
     assert.equal(args.filter((arg) => arg === "--dangerously-skip-permissions").length, 1);
+    assert.ok(!args.includes("--mode"));
     assert.ok(!args.includes("--sandbox"));
   }
   assert.throws(() => buildAgyArgs("task", { sandbox: true }), /--sandbox is no longer supported/);
+});
+
+test("[TS-1101] [BE-UT] agy execution modes pass --mode instead of skipping permissions", () => {
+  for (const mode of ["auto", "accept-edits", "plan"]) {
+    const args = buildAgyArgs("task", { mode, resumeLast: true });
+    assert.deepEqual(args.slice(0, 3), ["--mode", mode, "--continue"]);
+    assert.ok(!args.includes("--dangerously-skip-permissions"));
+  }
+  assert.deepEqual(AGY_RUN_MODES, ["auto", "accept-edits", "plan", "dangerously-skip-permissions"]);
+  assert.throws(() => buildAgyArgs("task", { mode: "yolo" }), /Unknown agy run mode "yolo"/);
 });
 
 test("[TS-1002] [BE-IT] CLI rejects deprecated sandbox before launching a task or review", () => {
@@ -236,5 +247,125 @@ test("[TS-1009] [BE-UT] Windows lookup reads Path/LocalAppData case-insensitivel
     assert.equal(resolveAgyBinary({ platform: "win32", env: { Path: `"${quotedDir}"` }, homedir: root }), exe);
     const vendor = touch(path.join(root, "agy", "bin"), "agy.exe");
     assert.equal(resolveAgyBinary({ platform: "win32", env: { Path: "", LocalAppData: root }, homedir: root }), vendor);
+  });
+});
+
+// Runs the companion with no agy reachable, so --dry-run and setup never start a real agy.
+function withCompanion(fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-mode-"));
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace);
+  const script = path.resolve("plugins/agy/scripts/agy-companion.mjs");
+  const run = (args, extraEnv = {}) => {
+    const env = { ...process.env, PATH: "", Path: "", HOME: root, USERPROFILE: root, LOCALAPPDATA: root, CLAUDE_PLUGIN_DATA: path.join(root, "data"), ...extraEnv };
+    if (!("AGY_PLUGIN_DEFAULT_MODE" in extraEnv)) delete env.AGY_PLUGIN_DEFAULT_MODE;
+    return spawnSync(process.execPath, [script, ...args], { cwd: workspace, env, encoding: "utf8" });
+  };
+  const dryRunMode = (args, extraEnv) => {
+    const result = run(["task", "--dry-run", "--json", ...args, "hello"], extraEnv);
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout).options.find((option) => option.startsWith("mode: "));
+  };
+  const setup = (args, extraEnv) => {
+    const result = run(["setup", "--json", ...args], extraEnv);
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  try {
+    return fn({ run, dryRunMode, setup });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("[TS-1102] [BE-IT] run mode precedence is flag, then workspace setup, then env, then default", () => {
+  withCompanion(({ dryRunMode, setup }) => {
+    const env = { AGY_PLUGIN_DEFAULT_MODE: "auto" };
+    assert.equal(dryRunMode([]), "mode: dangerously-skip-permissions (no agy sandbox)");
+    assert.deepEqual(setup([]).modeSource, "default");
+    assert.equal(dryRunMode([], env), "mode: auto");
+    assert.equal(setup([], env).modeSource, "env");
+
+    const configured = setup(["--mode", "plan"], env);
+    assert.equal(configured.mode, "plan");
+    assert.equal(configured.modeSource, "workspace");
+    assert.equal(dryRunMode([], env), "mode: plan");
+    assert.equal(dryRunMode(["--mode", "accept-edits"], env), "mode: accept-edits");
+    assert.equal(dryRunMode(["--dangerously-skip-permissions"], env), "mode: dangerously-skip-permissions (no agy sandbox)");
+
+    assert.equal(setup(["--clear-mode"], env).modeSource, "env");
+    assert.equal(dryRunMode([], env), "mode: auto");
+  });
+});
+
+test("[TS-1103] [BE-IT] invalid or conflicting run modes fail before agy starts", () => {
+  withCompanion(({ run }) => {
+    const cases = [
+      [["task", "--dry-run", "--mode", "yolo", "hello"], {}, /Unknown --mode "yolo"/],
+      [["task", "--dry-run", "--mode", "auto", "--dangerously-skip-permissions", "hello"], {}, /Choose either --mode or --dangerously-skip-permissions/],
+      [["review", "--dry-run", "--mode", "yolo"], {}, /Unknown --mode "yolo"/],
+      [["task", "--dry-run", "hello"], { AGY_PLUGIN_DEFAULT_MODE: "yolo" }, /Unknown AGY_PLUGIN_DEFAULT_MODE "yolo"/],
+      [["setup", "--mode", "yolo"], {}, /Unknown --mode "yolo"/],
+      [["setup", "--mode", "auto", "--clear-mode"], {}, /Choose either --mode or --clear-mode/],
+      [["task", "--dry-run", "--mode=", "hello"], {}, /Missing value for --mode/],
+      [["setup", "--mode="], {}, /Missing value for --mode/]
+    ];
+    for (const [args, env, pattern] of cases) {
+      const result = run(args, env);
+      assert.notEqual(result.status, 0, args.join(" "));
+      assert.match(result.stderr + result.stdout, pattern);
+    }
+  });
+});
+
+test("[TS-1104] [BE-IT] --mode never leaks into the prompt text", () => {
+  withCompanion(({ run }) => {
+    const result = run(["task", "--dry-run", "--json", "--mode", "auto", "fix the bug"]);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.details.includes("Prompt: fix the bug"), report.details.join(" | "));
+  });
+});
+
+test("[TS-1105] [BE-IT] a background task keeps its run mode through the detached worker", { skip: POSIX_STUB_ONLY }, () => {
+  const tmpBase = path.resolve(".tmp");
+  fs.mkdirSync(tmpBase, { recursive: true });
+  const root = fs.mkdtempSync(path.join(tmpBase, "agy-bg-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "agy"), `#!${process.execPath}\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 });
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace);
+  const script = path.resolve("plugins/agy/scripts/agy-companion.mjs");
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CLAUDE_PLUGIN_DATA: path.join(root, "data"), AGY_PLUGIN_DEFAULT_MODE: "plan" };
+  const run = (args) => {
+    const result = spawnSync(process.execPath, [script, ...args], { cwd: workspace, env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  try {
+    const { jobId } = run(["task", "--background", "--json", "--mode", "auto", "hello"]);
+    run(["status", jobId, "--wait", "--timeout-ms", "20000", "--json"]);
+    const { storedJob } = run(["result", jobId, "--json"]);
+    const agyArgs = JSON.parse(storedJob.result.rawOutput);
+    assert.deepEqual(agyArgs.slice(0, 2), ["--mode", "auto"]);
+    assert.ok(!agyArgs.includes("--dangerously-skip-permissions"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("[TS-1106] [BE-IT] setup reports an invalid env mode instead of failing, and env values are trimmed", () => {
+  withCompanion(({ run, dryRunMode, setup }) => {
+    const report = setup([], { AGY_PLUGIN_DEFAULT_MODE: "yolo" });
+    assert.equal(report.mode, null);
+    assert.match(report.modeError, /Unknown AGY_PLUGIN_DEFAULT_MODE "yolo"/);
+    assert.ok(report.nextSteps.some((step) => step.includes("/agy:setup --mode")));
+    const text = run(["setup"], { AGY_PLUGIN_DEFAULT_MODE: "yolo" });
+    assert.equal(text.status, 0, text.stderr);
+    assert.match(text.stdout, /run mode: invalid/);
+    assert.equal(setup(["--mode", "auto"], { AGY_PLUGIN_DEFAULT_MODE: "yolo" }).mode, "auto");
+    setup(["--clear-mode"]);
+    assert.equal(dryRunMode([], { AGY_PLUGIN_DEFAULT_MODE: " accept-edits " }), "mode: accept-edits");
   });
 });

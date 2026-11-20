@@ -62,6 +62,17 @@ function pushJobDetails(lines, job, options = {}) {
   }
 }
 
+const MODE_SOURCE_LABELS = {
+  flag: "from --mode",
+  workspace: "set for this workspace by /agy:setup --mode",
+  env: "from AGY_PLUGIN_DEFAULT_MODE",
+  default: "default"
+};
+
+function describeModeSource(source) {
+  return MODE_SOURCE_LABELS[source] ?? source;
+}
+
 export function renderSetupReport(report) {
   const lines = [
     "# agy Setup",
@@ -71,6 +82,7 @@ export function renderSetupReport(report) {
     "Checks:",
     `- agy: ${report.agy.detail}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
+    report.modeError ? `- run mode: invalid (${report.modeError})` : `- run mode: ${report.mode} (${describeModeSource(report.modeSource)})`,
     ""
   ];
 
