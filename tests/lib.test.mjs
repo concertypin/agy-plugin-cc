@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
-import { AGY_RUN_MODES, buildAgyArgs, installHint, resolveAgyBinary, runAgyTask, runAgyTaskSync } from "../plugins/agy/scripts/lib/agy.mjs";
+import { AGY_RUN_MODES, buildAgyArgs, createLineSplitter, createProgressThrottle, installHint, resolveAgyBinary, runAgyTask, runAgyTaskSync } from "../plugins/agy/scripts/lib/agy.mjs";
 import { runCommand } from "../plugins/agy/scripts/lib/process.mjs";
 
 import { parseArgs, splitRawArgumentString } from "../plugins/agy/scripts/lib/args.mjs";
@@ -461,4 +461,70 @@ test("[TS-1301] [BE-UT] every child process the plugin spawns hides its Windows 
     }
   }
   assert.ok(checked >= 10, `expected to find the plugin's spawn calls, found ${checked}`);
+});
+
+test("[TS-1401] [BE-UT] progress lines are whole lines even when chunks split them", () => {
+  const lines = [];
+  const splitter = createLineSplitter((line) => lines.push(line));
+  for (const chunk of ["안녕! 나는 모모노\n코", "코야~\n\n  \nOn branch ma", "in\r", "\nNo commits yet"]) splitter.push(chunk);
+  assert.deepEqual(lines, ["안녕! 나는 모모노", "코코야~", "On branch main"]);
+  splitter.flush();
+  assert.deepEqual(lines, ["안녕! 나는 모모노", "코코야~", "On branch main", "No commits yet"]);
+  splitter.flush();
+  assert.equal(lines.length, 4);
+
+  const redrawn = [];
+  const status = createLineSplitter((line) => redrawn.push(line));
+  for (const chunk of ["Working 1\rWorking 2\r", "Working 3\r", "done", "\n"]) status.push(chunk);
+  assert.deepEqual(redrawn, ["Working 1", "Working 2", "Working 3", "done"]);
+});
+
+test("[TS-1403] [BE-UT] progress is throttled to one line per interval", () => {
+  let time = 0;
+  const seen = [];
+  const report = createProgressThrottle((line) => seen.push(line), 1000, () => time);
+  report("first");
+  time = 500;
+  report("dropped");
+  time = 1000;
+  report("second");
+  time = 1999;
+  report("dropped again");
+  assert.deepEqual(seen, ["first", "second"]);
+  const unthrottled = [];
+  const all = createProgressThrottle((line) => unthrottled.push(line), 0, () => 0);
+  all("a");
+  all("b");
+  assert.deepEqual(unthrottled, ["a", "b"]);
+});
+
+test("[TS-1402] [BE-IT] runAgyTask reports whole progress lines and keeps a split multi-byte character intact", { skip: POSIX_STUB_ONLY }, async () => {
+  const tmpBase = path.resolve(".tmp");
+  fs.mkdirSync(tmpBase, { recursive: true });
+  const root = fs.mkdtempSync(path.join(tmpBase, "agy-progress-"));
+  const bytes = Buffer.from("안녕 코코\nOn branch main\n", "utf8");
+  const cut = Buffer.from("안녕 ", "utf8").length + 1; // inside the 3-byte "코"
+  fs.writeFileSync(path.join(root, "agy"), [
+    `#!${process.execPath}`,
+    `const bytes = Buffer.from(${JSON.stringify(bytes.toString("base64"))}, "base64");`,
+    `process.stdout.write(bytes.subarray(0, ${cut}));`,
+    `setTimeout(() => process.stdout.write(bytes.subarray(${cut})), 100);`
+  ].join("\n"), { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${root}${path.delimiter}${previousPath}`;
+  try {
+    const messages = [];
+    const result = await runAgyTask(root, "task", { progressIntervalMs: 0, onProgress: ({ message }) => messages.push(message) });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stdout, bytes.toString("utf8"));
+    assert.deepEqual(messages, ["안녕 코코", "On branch main"]);
+
+    // With the default interval the answer is not echoed line by line.
+    const throttled = [];
+    await runAgyTask(root, "task", { onProgress: ({ message }) => throttled.push(message) });
+    assert.deepEqual(throttled, ["안녕 코코"]);
+  } finally {
+    process.env.PATH = previousPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

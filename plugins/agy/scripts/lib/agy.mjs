@@ -131,6 +131,49 @@ export function buildAgyArgs(prompt, options = {}) {
   return args;
 }
 
+// agy streams stdout in arbitrary chunks. Progress is reported per complete,
+// non-blank line so a chunk boundary never cuts a line in half. A bare "\r"
+// (a redrawn status line) also ends a line.
+export function createLineSplitter(onLine) {
+  let pending = "";
+  const emit = (line) => {
+    const text = line.trim();
+    if (text) onLine(text);
+  };
+  return {
+    push(text) {
+      // Without a line break there is nothing to emit; skip re-splitting a
+      // long unterminated line on every chunk.
+      if (!/[\r\n]/.test(text)) {
+        pending += text;
+        return;
+      }
+      const lines = (pending + text).split(/\r\n|[\r\n]/);
+      pending = lines.pop();
+      lines.forEach(emit);
+    },
+    flush() {
+      emit(pending);
+      pending = "";
+    }
+  };
+}
+
+// Progress only shows that agy is alive. Reporting every line would echo the
+// whole answer to stderr next to the final output, so at most one line per
+// interval gets through.
+export function createProgressThrottle(onProgress, intervalMs, now = Date.now) {
+  let last = -Infinity;
+  return (line) => {
+    const time = now();
+    if (time - last < intervalMs) return;
+    last = time;
+    onProgress(line);
+  };
+}
+
+const PROGRESS_INTERVAL_MS = 1000;
+
 export async function runAgyTask(cwd, prompt, options = {}) {
   const args = buildAgyArgs(prompt, options);
 
@@ -148,15 +191,23 @@ export async function runAgyTask(cwd, prompt, options = {}) {
 
     let stdout = "";
     let stderr = "";
+    const progress = createLineSplitter(createProgressThrottle(
+      (line) => options.onProgress?.({ message: line }),
+      options.progressIntervalMs ?? PROGRESS_INTERVAL_MS
+    ));
+
+    // setEncoding decodes across chunk boundaries, so a multi-byte character
+    // split between two chunks is not mangled.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
 
     child.stdout.on("data", (chunk) => {
-      const s = chunk.toString();
-      stdout += s;
-      options.onProgress?.({ message: s.trim().split("\n")[0] ?? "" });
+      stdout += chunk;
+      progress.push(chunk);
     });
 
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderr += chunk;
     });
 
     child.on("error", (error) => {
@@ -164,6 +215,7 @@ export async function runAgyTask(cwd, prompt, options = {}) {
     });
 
     child.on("close", (code) => {
+      progress.flush();
       resolve({ exitCode: code ?? 0, stdout, stderr });
     });
   });
